@@ -1,3 +1,6 @@
+NOTE: This does not work yet and at the rate I am working on it who
+      knows when it will...
+
 This is an app for django for storing and manipulating timeseries.
 
 It is not intended for heavy industrial use because of the simplistic
