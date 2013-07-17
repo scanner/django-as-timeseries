@@ -18,8 +18,62 @@ from django.utils.translation import ugettext_lazy as _
 # 3rd party improts
 #
 
+# Rounding factors. When doing various historical queries usually the caller is
+# going to want the buckets rounded to some nice factor.
+#
+# So if the user has not specified an exact set of start/end times and bucket
+# sizes we are going to fudge their query so that the result begins and ends on
+# a nice factor of the range they are asking for.
+#
+# The bucket size is chosen so that not only is it a nice factor of the range
+# being fetched, but that the start and end of the range been queried will be
+# on one of the multiples of these minutes.
+#
+# For minutes:
+# 1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30
+#
+# For hours:
+# 1, 2, 3, 4, 6, 8, 12
+#
+
+# When we are auto-configuring the bucket size based on the range these are the
+# time ranges that select a certain bucket size (and a certain start/end time
+# rounded value)
+#
+RANGES = (
+    (1800,  10),   # 30 minutes - 10 second buckets
+    (3600,  20),   # 60 minutes - 20 second buckets
+    (7200,  40),   # 2 hours - 40 second buckets
+    (10800, 60),   # 3 hours - 1 minute
+    (14400, 120),  # 4 hours - 2 minute buckets
+    (21600, 180),  # 6 hours - 3 minute buckets
+    (28800, 240),  # 8 hours - 4 minute buckets
+    (43200, 300),  # 12 hours - 5 minute buckets
+    (57600, 360),  # 18 hours - 6 minute buckets
+    (86400, 600),  # 2 days - 10 minute buckets
+    (259200, 900), # 3 days - 15 minute
+    (345600, 1200), # 4 days - 20 minute
+    (604800, 1800), # 7 days - 30 minute
+    (1209600, 3600), # 14 days - 1 hour
+    (2592000, 7200), # 30 days - 2 hour
+    (5184000, 10800), # 60 days - 3 hour
+    (10368000, 14400), # 120 days - 4 hour
+    (20736000, 36000), # 240 days - 10 hour
+    (31536000, 86400), # 1 year - 1 day
+    # 1.5 years
+    # 2 years
+    # 3 years
+    # 5 years
+    # 10 years
+    )
+
 ########################################################################
 ########################################################################
+#
+# XXX I think we are going to call this 'node' and have 'timeseries' be a new
+#     class that represents just bucketed time series and has hash and array
+#     like access methods (and stuff so we can tie just the aggregated
+#     timeseries to cached structures in redis or whatever.)
 #
 class TimeSeries(models.Model):
     """
@@ -54,13 +108,18 @@ class TimeSeries(models.Model):
 
     # Aggregation functions we support
     #
-    MIN    = 'min'
-    MAX    = 'max'
-    FIRST  = 'first'
-    LAST   = 'last'
-    AVG    = 'avg'
+    MIN    = 'min'    # Min of all of the values in the bucket
+    MAX    = 'max'    # Max of all of the values in the bucket
+    FIRST  = 'first'  # First value that falls in to the bucket
+    LAST   = 'last'   # Last value that falls in to the bucket
+    MEAN   = 'mean'   # Mean of all of the points taht fall in to the bucket
+    STDDEV = 'stddev' # Standard deviation between all the points that
+                      # fall in to the bucket.
 
-    SUPPORTED_AGG_FUNCTIONS = (MIN, MAX, FIRST, LAST, AVG)
+    # NOTE: Look up normal, triangular, and uniform probability densities
+    # see: http://blog.velir.com/index.php/2013/07/11/visualizing-data-uncertainty-an-experiment-with-d3-js/
+    #
+    SUPPORTED_AGG_FUNCTIONS = (MIN, MAX, FIRST, LAST, MEAN, STDEV)
 
     # The types we support that cause the individual values to be coerced into
     # the expected type
@@ -76,6 +135,13 @@ class TimeSeries(models.Model):
         (DECIMAL, "Decimal"),
         (RAW,     "Raw"),
         )
+
+    FORMAT_CAST_FN = {
+        INT    : int,
+        FLOAT  : float,
+        DECIMAL: decimal.Decimal,
+        RAW    : lambda x: x,
+        }
 
     # The possible classes for this time series
     #
@@ -121,23 +187,54 @@ class TimeSeries(models.Model):
 
     ####################################################################
     #
+    def nhistory(self, frm, to, num_buckets = None, bucket_size = None,
+                 aggr_fn = AVG):
+        """
+
+        Arguments:
+        - `frm`:
+        - `to`:
+        - `num_buckets`:
+        - `bucket_size`:
+        - `aggr_fn`:
+        """
+        if aggr_fn not in SUPPORTED_AGG_FUNCTIONS:
+            raise ArgumentError(_("'%s' not a valid aggregation function") % \
+                                    aggr_fn)
+
+        # If the 'frm' is None then the 'from' time is the first sample in our
+        # time series. Ditto if 'to' is None then the 'to' time is the last
+        # sample in our time series.
+        #
+        # If the num_buckets and bucket_size are both None the caller wants us
+        # to determine reasonable numbers for these. This will be based on the
+        # size of the range that they have asked for.
+        #
+        if num_buckets is None and bucket_size is None:
+            # If 'frm' or 'to' are None then we need to go to the time series
+            # and fill them in with the first and/or last timestamps.
+            #
+            if to is None:
+                to = self.data.all()[0].time
+            if frm is None:
+                frm = self.data.all().order_by("-time")[0]
+
+            #
+        return
+
+    ####################################################################
+    #
     def history(self, frm = None, to = None, num_buckets = None,
-                bucket_size = 300, aggr_fn = AVG):
+                bucket_size = None, aggr_fn = AVG):
         """
         Get and aggregate the values in the time series between (and including)
         'frm' to 'to'. Group them either by the number of buckets asked for or
         the size of the buckets asked for. May not be both. Aggregate them
         according to the specific agggregation function.
 
-        NOTE: You can ask for more than one aggregation function! Basically as
-              an optimization. Some queries want to chart the min, max, first,
-              last, and average together. That would normally be five
-              iterations through the database and although the data is
-              hot.. why make those five trips if you know you want all five
-              datums when you make the first call.
-
-              If aggr_fn is an interable then each will be applied and the
-              result of each returned.
+        If neither num_bukcets nor bucket_size is specified the history()
+        method will try to decide an appropriate value mainly based on the date
+        range specified.
 
         The values will be cast to the 'fmt' (format) of the time series.
 
@@ -145,13 +242,15 @@ class TimeSeries(models.Model):
 
            [(<time stamp>, <value>), .... ]
 
-        If `aggr_fn` is just one of the aggregation functions the scalar value
-        will be returned. If `aggr_fn` is a sequence type, than a list of the
-        resulting scalar values will be returned.
+        NOTE: If a caching store (redis) is configured the results of the
+              aggregation will be stored there and successive retrievals will
+              get the values from there.
 
-        If a caching store (redis) is configured the results of the aggregation
-        will be stored there and successive retrievals will get the values from
-        there.
+        NOTE: If a caching store is configured we will actually compute all of
+              the possible aggregation functions since computing and storing
+              the result in the cache is cheap and will save us if the same
+              query is made with a different aggregation function while the
+              cache is still valid.
 
         Arguments:
         - `frm`:         consider all samples including this date forward.
@@ -161,32 +260,48 @@ class TimeSeries(models.Model):
                          Defaults to 'None' which is the same as the most
                          recent sample in the time series
         - `num_buckets`: How many buckets to split all of the selected samples
-                         between. NOTE: You can specify either num_buckets
-                         or bucket_size, but not both
+                         between.
+
+                         NOTE: You can specify either num_buckets or
+                               bucket_size, but not both. If neither are
+                               specified history() will try to figure out a
+                               good value based on the date range.
+
         - `bucket_size`: The size of the buckets. This is in seconds. Defaults
                          to 5 minutes
         - `aggr_fn`:     The type of function for aggregation of raw values in
                          to buckets. A string of 'min', 'max', 'first', 'last',
                          'avg.' Defaults to 'avg'
-
-                         NOTE: This can be a sequence type which contains all of
-                               the aggregation functions to use.
         """
 
-        # When producing the result use this boolean to keep track of whether
-        # we are returning a scalar result or a list.
+        # make sure the caller specified a valid aggregation function.
         #
-        scalar_result = False
+        if aggr_fn not in SUPPORTED_AGG_FUNCTIONS:
+            raise ArgumentError(_("'%s' not a valid aggregation function") % \
+                                    aggr_fn)
 
-        # Turn 'aggr_fn' into a tuple if it is not already an iterable.
-        if not hasattr(aggr_fn, "__iter__"):
-            scalar_result = True
-            aggr_fn = (aggr_fn,)
+        # If frm & to are both None then that means we need to fetch the entire
+        # range of history values for this timeseries. That is easy enough, but
+        # if neither num_buckets nor bucket_size are specified than we need to
+        # decide on an appropriate bucket size and to do that we need to know
+        # the first and last timestamps of our time series.
+        #
 
-        for afn in aggr_fn:
-            if afn not in SUPPORTED_AGG_FUNCTIONS:
-                raise ArgumentError(_("'%s' not a valid aggregation "
-                                      "function") % aggr_fn)
+        # Set up the filter to determine the range of values we are going to
+        # retrieve
+        #
+        # XXX part of what is going to happen here is to look at the date range
+        #     and the bucket size and see if we have any cached series that
+        #     match the bucket size and dates of cached series (and if they do
+        #     only fetch values that are not already computed by the cached
+        #     series)
+        #
+        kwargs = {}
+        if frm is not None:
+            kwargs["time__gte", frm]
+        if to is not None:
+            kwargs["time__lte", to]
+
 
 
 
@@ -252,6 +367,29 @@ class TimeSeries(models.Model):
 
     ####################################################################
     #
+    def current(self):
+        """
+        Return the current value of this timeseries (node)
+        """
+        return self.cast(self.data.all()[0])
+
+    ####################################################################
+    #
+    def cast(self, value):
+        """
+        Convert the string value in to the value type (cls) for this time
+        series.
+
+        XXX We need to check if the cls is 'Decimal' and if it is call the cast
+            function with the precision context.
+
+        Arguments:
+        - `value`:
+        """
+        return FORMAT_CAST_FN[self.cls](value)
+
+    ####################################################################
+    #
     def count(self, frm = None, to = None):
         """
         A shortcut to return the number of data in this timeseries.
@@ -262,14 +400,12 @@ class TimeSeries(models.Model):
         - `when`: Count samples up to (and including) this date. If 'None'
                   then stop at the last sample in this timeseries
         """
-        if frm is None and to is None:
-            return self.data.count()
-        elif frm is None:
-            return self.data.filter(time__gte = frm).count()
-        elif to is None:
-            return self.data.filter(time__lte = to).count()
-        else:
-            return self.data.filter(time__gte = frm,time__lte = to).count()
+        kwargs = {}
+        if frm is not None:
+            kwargs["time__gte", frm]
+        if to is not None:
+            kwargs["time__lte", to]
+        return self.data.filter(**kwargs).count()
 
     ####################################################################
     #

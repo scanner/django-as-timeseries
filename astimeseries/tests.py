@@ -90,6 +90,8 @@ class BasicTimeSeries(TestCase):
         """
         Test getting a the values in a series collated by 'min()'
         """
+        t = TimeSeries.objects.get(name = "test")
+        d = t.history(aligned_buckets = True)
         return
 
     ####################################################################

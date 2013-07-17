@@ -1,0 +1,48 @@
+=== 2013.07.01
+
+Right now we have the models:
+
+o timeseries
+o datum
+
+A timeseries references a number of datums.
+A datum contains a value and a time timestamp.
+
+The timeseries has the method to retrieve its history. This method
+will bucket and aggregate the raw datum values in to a bunch of
+buckets based on the history query being made and its range.
+
+The idea was to store the result of this query in to a caching server,
+redis was the specific thought. Then if another query comes in such
+that most of the computation was already done and is sitting in redis,
+then a new query would be done just for the data outside what is
+stored in redis, the cached series in redis would be updated, and the
+result returned to the caller.
+
+NOTE: this was only for storing the bucketed results. Storing results
+that are derived from bucketed results would go in the separate
+'astimeseries.math' module and it would do its own caching.
+
+New concept:
+
+o we actually start to integrate the concept of a 'node' (in a tree?)
+  that represents the thing being monitored. This is what the current
+  'timeseries' model will become.
+o we add a proper timeseries object - it represents the aggregated
+  value of a node (with different aggregation bucket sizes, and
+  rounded timestamps, and aggregation functions)
+
+  the key thing is the 'name' of the timeseries object will quantify
+  enough aspects of its aggregation such that we can tell, when we are
+  doing a new time series query, if an existing bit of data fits our
+  need (ie: buckets are the same size and hit the same start and end
+  times for some subset or superset of the query)
+
+  also these are tied back to the data (node, or another time series)
+  that they rely upon.. make it possible to know if a parent series
+  has been modified such that we need to recompute the underlying
+  timeseries)
+
+  This may let us use this for the astimeseries.math module as well as
+  those will also be timeseries
+
