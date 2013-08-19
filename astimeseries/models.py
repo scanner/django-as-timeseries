@@ -8,6 +8,7 @@ Modes for the astimeseries django app
 
 # system imports
 #
+import decimal
 
 # Django imports
 #
@@ -119,7 +120,7 @@ class TimeSeries(models.Model):
     # NOTE: Look up normal, triangular, and uniform probability densities
     # see: http://blog.velir.com/index.php/2013/07/11/visualizing-data-uncertainty-an-experiment-with-d3-js/
     #
-    SUPPORTED_AGG_FUNCTIONS = (MIN, MAX, FIRST, LAST, MEAN, STDEV)
+    SUPPORTED_AGG_FUNCTIONS = (MIN, MAX, FIRST, LAST, MEAN, STDDEV)
 
     # The types we support that cause the individual values to be coerced into
     # the expected type
@@ -154,6 +155,11 @@ class TimeSeries(models.Model):
         (UNDEFINED, 'Undefined'),
         )
 
+    ##########
+    ##########
+    ###
+    ### Data fields
+    ###
     name = models.CharField(_('name'), max_length = 1024, db_index = True)
     created = models.DateTimeField(_('created'), auto_now_add = True,
                                    help_text = _('The time at which '
@@ -181,14 +187,20 @@ class TimeSeries(models.Model):
                            choices = CLASS_CHOICES, default = UNDEFINED,
                            help_text = _('Lets us track if this timeseries is '
                                          'counter or a gauge (or undefined)'))
-
+    ###
+    ###
+    ##########
+    ##########
+    ###
+    ### django model Meta class
+    ###
     class Meta:
         ordering = ('name',)
 
     ####################################################################
     #
     def nhistory(self, frm, to, num_buckets = None, bucket_size = None,
-                 aggr_fn = AVG):
+                 aggr_fn = STDDEV):
         """
 
         Arguments:
@@ -225,7 +237,7 @@ class TimeSeries(models.Model):
     ####################################################################
     #
     def history(self, frm = None, to = None, num_buckets = None,
-                bucket_size = None, aggr_fn = AVG):
+                bucket_size = None, aggr_fn = STDDEV):
         """
         Get and aggregate the values in the time series between (and including)
         'frm' to 'to'. Group them either by the number of buckets asked for or
@@ -271,7 +283,7 @@ class TimeSeries(models.Model):
                          to 5 minutes
         - `aggr_fn`:     The type of function for aggregation of raw values in
                          to buckets. A string of 'min', 'max', 'first', 'last',
-                         'avg.' Defaults to 'avg'
+                         'stddev.' Defaults to 'stddev'
         """
 
         # make sure the caller specified a valid aggregation function.
